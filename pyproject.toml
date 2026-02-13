@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "buffer"
+version = "0.1.0"
+description = "A thread-safe circular queue (ring buffer) implementation in Python"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Jason Naicker" }
+]
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

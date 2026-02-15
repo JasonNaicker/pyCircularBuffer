@@ -2,11 +2,10 @@ from __future__ import annotations
 from typing import Final, Generic, TypeVar, Optional, Sequence
 from numbers import Number
 from collections import deque
-from threading import Lock
 import math
+import numpy as np
 
 T = TypeVar("T", bound=Number)
-
 class CircularBuffer(Generic[T]):
     """
     A thread-safe circular queue (ring buffer) implementation with optional 
@@ -58,15 +57,15 @@ class CircularBuffer(Generic[T]):
             raise ValueError("Capacity must be positive")
 
         self._capacity = capacity
-        self._items: list[Optional[T]] = [None] * capacity
-
+        self._size = 0
+        #self._items: list[Optional[T]] = [None] * capacity
+        self._items = np.zeros(capacity, dtype=np.int16)
         self._OVERWRITING = OVERWRITING
         self._RESIZE = RESIZE
         self._DEBUG = DEBUG
 
-        self._head = 0
-        self._tail = 0
-        self._size = 0
+        self._head = 0 #Write Pointer
+        self._tail = 0 #Read Pointer
 
         self._POW_2 = self._is_power_of_2()
 
@@ -143,7 +142,7 @@ class CircularBuffer(Generic[T]):
         self._items[self._head] = value
         self._head = self._move_pointer(self._head)
 
-    def bulk_enqueue(self, items: Sequence[T]) -> int:
+    def bulk_enqueue(self, items: Sequence[T]) -> None:
         """
         Add multiple elements to the queue at once.
 
@@ -153,31 +152,35 @@ class CircularBuffer(Generic[T]):
         Returns:
             int: Number of elements actually enqueued.
         """
+        if not items: return
+
         input_size: int = len(items)
+        space_in_buffer  : int = self._capacity - self._size
 
-        if input_size == 0:
-            return 0
+        if self._RESIZE and input_size > space_in_buffer:
+            self.resize(max(self._capacity * 2, self._size + 1))
 
-        space: int = self._capacity - self._size
+        if not self._OVERWRITING and input_size > space_in_buffer:
+            input_size = space_in_buffer
+            items = items[:space_in_buffer]
 
-        if input_size > space:
-            if self._OVERWRITING:
-                overflow: int = input_size - space
-                for _ in range(overflow):
-                    self._tail = self._move_pointer(self._tail)
-            elif self._RESIZE:
-                self.resize(self._capacity + (input_size - space))
-                space = self._capacity - self._size
-            else:
-                input_size = space
+        if input_size <= 0: return
 
-        count: int = min(input_size, space)
-        for i in range(count):
-            self._items[self._head] = items[i]
-            self._head = self._move_pointer(self._head)
+        #Overwriting buffer for overflow
+        overflow = max(0, self._size + input_size - self._capacity)
+        if overflow:
+            self._tail = self._move_pointer(self._tail, overflow)
+            self._size -= overflow 
+        first_part = min(input_size, self._capacity - self._head)
+        second_part = input_size - first_part
 
-        self._size += count
-        return count
+        self._items[self._head : self._head + first_part] = items[:first_part]
+
+        if second_part:
+            self._items[:second_part] = items[first_part:]
+
+        self._head = self._move_pointer(self._head, input_size)
+        self._size += input_size 
 
     def dequeue(self) -> T:
         """
@@ -220,7 +223,11 @@ class CircularBuffer(Generic[T]):
 
         remaining = count - first_part
         if remaining > 0:
-            out += self._items[0:remaining]
+            #out += self._items[0:remaining]
+            out = np.concatenate((
+                self._items[tail : tail + first_part],
+                self._items[0:remaining]
+            ))
 
         self._tail = self._move_pointer(self._tail, count)
         self._size -= count
@@ -242,7 +249,7 @@ class CircularBuffer(Generic[T]):
 
         if not isinstance(new_capacity, int):
             raise TypeError(f"Capacity must be int, got {type(new_capacity)}: {new_capacity}")
-        print(new_capacity)
+        
         new_items: list[Optional[T]] = [None] * new_capacity
 
         for i in range(self._size):
@@ -258,47 +265,49 @@ class CircularBuffer(Generic[T]):
         """Print the internal array of the queue (debugging)."""
         print(self._items)
 
-    def print_circle(self, _radius: Optional[int] = None) -> None:
-        """
-        Print a simple text-based circle representation of the queue.
-
-        Args:
-            _radius (Optional[int]): Radius of the circle. Defaults to max(3, capacity // 2).
-        """
-        if self.is_empty():
-            print("Circular Queue is empty")
+    def print_circle(self, radius: int = 10) -> None:
+        if self.is_empty() and not self._DEBUG:
+            print("\n[ Buffer is empty ]\n")
             return
 
-        n = self._capacity
-        radius = _radius if _radius else max(3, n // 2)  
-        center = radius
-        canvas_size = radius * 2 + 1
+        aspect_ratio = 2.0 
+        width = int(radius * aspect_ratio * 2) + 15
+        height = (radius * 2) + 5
+        center_x, center_y = width // 2, height // 2
+        canvas = [[" " for _ in range(width)] for _ in range(height)]
 
-        canvas = [[' ' for _ in range(canvas_size)] for _ in range(canvas_size)]
+        for i in range(self._capacity):
+            angle = (2 * math.pi * i / self._capacity) - (math.pi / 2)
+            x = int(center_x + radius * math.cos(angle) * aspect_ratio)
+            y = int(center_y + radius * math.sin(angle))
 
-        y_scale = 0.5 
+            is_head = (i == self._head % self._capacity)
+            is_tail = (i == self._tail % self._capacity)
+            val = self._items[i]
+            display_val = f"({val})" if val is not None else "[ ]"
+            
+            ptr = ""
+            if is_head and is_tail: ptr = "H+T"
+            elif is_head: ptr = "H"
+            elif is_tail: ptr = "T"
+            
+            label = f"{ptr:^3} {display_val}" if ptr else display_val
+            start_x = x - (len(label) // 2)
+            for char_idx, char in enumerate(label):
+                if 0 <= y < height and 0 <= (start_x + char_idx) < width:
+                    canvas[y][start_x + char_idx] = char
 
-        for i in range(n):
-            angle = 2 * math.pi * i / n
-            x = round(center + radius * math.cos(angle))
-            y = round(center + radius * math.sin(angle) * y_scale)
-            idx = (self._tail + i) % n
-            item = self._items[idx]
-            if 0 <= y < canvas_size and 0 <= x < canvas_size:
-                canvas[y][x] = str(item) if item is not None else '.'
+        title = f" CAPACITY: {self._capacity} "
+        canvas[center_y][center_x - len(title)//2 : center_x + (len(title)+1)//2] = list(title)
 
-        head_x = round(center + radius * math.cos(2 * math.pi * (self._head - 1) / n))
-        head_y = round(center + radius * math.sin(2 * math.pi * (self._head - 1) / n) * y_scale)
-        tail_x = round(center + radius * math.cos(2 * math.pi * self._tail / n))
-        tail_y = round(center + radius * math.sin(2 * math.pi * self._tail / n) * y_scale)
+        border = "=" * width
+        print(f"\n{border}")
+        for row in canvas: print("".join(row))
+        print(border)
+        print(f"  Legend: H=Head | T=Tail | Size: {self._size}")
+        print(f"{border}\n")
 
-        if 0 <= head_y < canvas_size and 0 <= head_x < canvas_size and \
-           0 <= tail_y < canvas_size and 0 <= tail_x < canvas_size:
-            if canvas[head_y][head_x] == canvas[tail_y][tail_x]:
-                canvas[head_y][head_x] = 'B' 
-            else:
-                canvas[head_y][head_x] = 'H'
-                canvas[tail_y][tail_x] = 'T'
-
-        for row in canvas:
-            print(''.join(row))
+if __name__ == "__main__":
+    d = CircularBuffer(5, None, True, False, True)
+    d.bulk_enqueue([1,2,3,4,5,6])
+    d.print_circle()

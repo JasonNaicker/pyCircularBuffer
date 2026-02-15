@@ -19,7 +19,9 @@ def benchmark(func: Callable, iterations: int, *args, **kwargs) -> tuple[float, 
 
 
 def benchmark_circular_queue(capacity: int, iterations: int, overwriting: bool = False, resize: bool = False) -> None:
-    data = [random.randint(0, capacity * 10) for _ in range(capacity)]
+    LOW_INT : int = -32_768
+    HIGH_INT : int = 32_767
+    data = [random.randint(LOW_INT, HIGH_INT) for _ in range(capacity)]
     queue = CircularBuffer(
         capacity=capacity,
         items=data,
@@ -44,14 +46,14 @@ def benchmark_circular_queue(capacity: int, iterations: int, overwriting: bool =
 
     # enqueue
     total, avg, times = benchmark(
-    lambda: queue.enqueue(random.randint(0, capacity)),
+    lambda: queue.enqueue(random.randint(LOW_INT, HIGH_INT)),
         iterations
     )
     record("enqueue", total, avg, times, iterations)
 
-    # dequeue (paired with enqueue to keep size stable)
+    # dequeue 
     total, avg, times = benchmark(
-        lambda: (queue.dequeue(), queue.enqueue(random.randint(0, capacity))),
+        lambda: (queue.dequeue(), queue.enqueue(random.randint(LOW_INT, HIGH_INT))),
         iterations
     )
     record("dequeue", total, avg, times, iterations)
@@ -63,17 +65,17 @@ def benchmark_circular_queue(capacity: int, iterations: int, overwriting: bool =
     )
     record("peek", total, avg, times, iterations)
 
-    # bulk enqueue (small batch)
-    batch = [random.randint(0, capacity) for _ in range(100_000)]
+    # bulk enqueue
+    batch = [random.randint(LOW_INT, HIGH_INT) for _ in range(capacity)]
     total, avg, times = benchmark(
         lambda: queue.bulk_enqueue(batch),
         iterations
     )
     record("bulk_enqueue", total, avg, times, iterations)
 
-    # bulk dequeue (paired with bulk enqueue)
+    # bulk dequeue
     total, avg, times = benchmark(
-        lambda: (queue.bulk_dequeue(100_000), queue.bulk_enqueue(batch)),
+        lambda: (queue.bulk_dequeue(capacity), queue.bulk_enqueue(batch)),
         iterations
     )
     record("bulk_dequeue", total, avg, times, iterations)
@@ -117,5 +119,5 @@ def print_table(results) -> None:
         )
 
 if __name__ == "__main__":
-    print("Starting benchmark...")
-    benchmark_circular_queue(1_000_000, 100, True, False)
+    print("Starting Benchmark...")
+    benchmark_circular_queue(1_000_000,100,True,False)

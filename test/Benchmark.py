@@ -1,123 +1,136 @@
-import random
-from typing import Callable
-from buffer import CircularBuffer
-import statistics
 import time
+import gc
+import numpy as np
+import statistics
+from buffer import CircularBuffer
 
+# -------------------------------------------------
+# Audio Streaming Benchmark
+# -------------------------------------------------
+def benchmark_audio_buffer(
+    capacity: int = 4096,
+    frame_size: int = 256,
+    iterations: int = 1_000_000,
+    trials: int = 7,
+    overwriting: bool = False,
+    resize: bool = False,
+    use_numpy_storage: bool = False,
+) -> None:
+    """
+    Statistically stable benchmark for bulk_enqueue + bulk_dequeue.
 
-def benchmark(func: Callable, iterations: int, *args, **kwargs) -> tuple[float, float, list[float]]:
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
-        func(*args, **kwargs)
-        end = time.perf_counter()
-        times.append(end - start)
+    Measures total time per trial instead of per-iteration timing
+    to eliminate measurement noise.
+    """
 
-    total_time = sum(times)
-    avg_time = total_time / len(times)
-    return total_time, avg_time, times
+    print("Starting Audio Buffer Benchmark...\n")
 
-
-def benchmark_circular_queue(capacity: int, iterations: int, overwriting: bool = False, resize: bool = False) -> None:
-    LOW_INT : int = -32_768
-    HIGH_INT : int = 32_767
-    data = [random.randint(LOW_INT, HIGH_INT) for _ in range(capacity)]
-    queue = CircularBuffer(
-        capacity=capacity,
-        items=data,
-        OVERWRITING=overwriting,
-        RESIZE=resize,
-        DEBUG=False
+    # -----------------------------
+    # Pre-generate audio data
+    # -----------------------------
+    input_frame = np.random.randint(
+        -32768, 32767, size=frame_size, dtype=np.int16
     )
 
-    # Name, iterations, total, avg, min, max, stddev
-    results = []
-
-    def record(name: str, total: float, avg: float, times: list[float], iters: int):
-        results.append((
-            name,
-            iters,
-            total,
-            avg,
-            min(times),
-            max(times),
-            statistics.stdev(times) if len(times) > 1 else 0.0
-        ))
-
-    # enqueue
-    total, avg, times = benchmark(
-    lambda: queue.enqueue(random.randint(LOW_INT, HIGH_INT)),
-        iterations
+    warmup_size = capacity // 2
+    warmup_data = np.random.randint(
+        -32768, 32767, size=warmup_size, dtype=np.int16
     )
-    record("enqueue", total, avg, times, iterations)
 
-    # dequeue 
-    total, avg, times = benchmark(
-        lambda: (queue.dequeue(), queue.enqueue(random.randint(LOW_INT, HIGH_INT))),
-        iterations
-    )
-    record("dequeue", total, avg, times, iterations)
+    trial_times = []
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
 
-    # peek
-    total, avg, times = benchmark(
-        lambda: queue.peek(),
-        iterations
-    )
-    record("peek", total, avg, times, iterations)
+    try:
+        for trial in range(trials):
 
-    # bulk enqueue
-    batch = [random.randint(LOW_INT, HIGH_INT) for _ in range(capacity)]
-    total, avg, times = benchmark(
-        lambda: queue.bulk_enqueue(batch),
-        iterations
-    )
-    record("bulk_enqueue", total, avg, times, iterations)
+            # -----------------------------
+            # Fresh buffer per trial
+            # -----------------------------
+            buffer = CircularBuffer(
+                capacity=capacity,
+                items=None,
+                OVERWRITING=overwriting,
+                RESIZE=resize,
+                NPARR=use_numpy_storage,
+                DEBUG=False
+            )
 
-    # bulk dequeue
-    total, avg, times = benchmark(
-        lambda: (queue.bulk_dequeue(capacity), queue.bulk_enqueue(batch)),
-        iterations
-    )
-    record("bulk_dequeue", total, avg, times, iterations)
+            buffer.bulk_enqueue(warmup_data)
 
-    # resize (only meaningful if resize enabled)
-    if resize:
-        total, avg, times = benchmark(
-            lambda: queue.resize(),
-            iterations
-        )
-        record("resize", total, avg, times, iterations)
+            # -----------------------------
+            # Warmup loop (CPU/cache stabilize)
+            # -----------------------------
+            for _ in range(10_000):
+                buffer.bulk_enqueue(input_frame)
+                buffer.bulk_dequeue(frame_size)
 
-    # build queue
-    total, avg, times = benchmark(
-        lambda: CircularBuffer(
-            capacity=capacity,
-            items=data,
-            OVERWRITING=overwriting,
-            RESIZE=resize
-        ),
-        iterations
-    )
-    record("build_buffer", total, avg, times, iterations)
+            # -----------------------------
+            # Timed section
+            # -----------------------------
+            start = time.perf_counter()
 
-    print_table(results)
+            for _ in range(iterations):
+                buffer.bulk_enqueue(input_frame)
+                buffer.bulk_dequeue(frame_size)
+
+            end = time.perf_counter()
+
+            total_time = end - start
+            trial_times.append(total_time)
+
+            print(f"Trial {trial+1}: {total_time:.6f} sec")
+
+    finally:
+        # Restore GC
+        if gc_was_enabled:
+            gc.enable()
+
+    # -----------------------------
+    # Statistics across trials
+    # -----------------------------
+    total_samples = iterations * frame_size
+
+    mean_time = statistics.mean(trial_times)
+    median_time = statistics.median(trial_times)
+    stddev_time = statistics.stdev(trial_times) if len(trial_times) > 1 else 0.0
+
+    samples_per_second = total_samples / median_time
+    time_per_sample = median_time / total_samples
+    frames_per_second = iterations / median_time
+
+    # -----------------------------
+    # Print Results
+    # -----------------------------
+    print("\n" + "=" * 60)
+    print("Audio Buffer Benchmark Results (Stable Mode)")
+    print("=" * 60)
+    print(f"Capacity:               {capacity}")
+    print(f"Frame size:             {frame_size}")
+    print(f"Iterations per trial:   {iterations}")
+    print(f"Trials:                 {trials}")
+    print("-" * 60)
+    print(f"Mean total time (s):    {mean_time:.6f}")
+    print(f"Median total time (s):  {median_time:.6f}")
+    print(f"Std Dev (s):            {stddev_time:.6f}")
+    print("-" * 60)
+    print(f"Frames / second:        {frames_per_second:,.0f}")
+    print(f"Samples / second:       {samples_per_second:,.0f}")
+    print(f"Time per sample (s):    {time_per_sample:.12f}")
+    print("=" * 60)
+    print("\nDone.\n")
 
 
-def print_table(results) -> None:
-    print(f"{'Operation':<25} {'Iterations':>10} {'Total(s)':>10} {'Avg(s)':>10} {'Min(s)':>10} {'Max(s)':>10} {'StdDev':>10}")
-    print("-" * 90)
-
-    for op, count, total, avg, mn, mx, stdev in results:
-        print(
-            f"{op:<25} "
-            f"{count:>10} "
-            f"{total:>10.4f} "
-            f"{avg:>10.8f} "
-            f"{mn:>10.8f} "
-            f"{mx:>10.8f} "
-            f"{stdev:>10.8f}"
-        )
-
+# -------------------------------------------------
+# Entry Point
+# -------------------------------------------------
 if __name__ == "__main__":
-    print("Starting Benchmark...")
-    benchmark_circular_queue(1_000_000,100,True,False)
+    benchmark_audio_buffer(
+        capacity=4096,
+        frame_size=256,
+        iterations=1_000_000,
+        trials=5,
+        overwriting=False,
+        resize=False,
+        use_numpy_storage=True
+    )

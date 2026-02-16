@@ -24,7 +24,7 @@ class CircularBuffer(Generic[T]):
         lock (Lock): Threading lock for concurrent access.
     """
 
-    __slots__ = {"_items", "_OVERWRITING", "_head", "_tail", "_size", "_capacity", "_POW_2", "_RESIZE", "_DEBUG", "lock"}
+    __slots__ = {"_items", "_OVERWRITING", "_head", "_tail", "_size", "_capacity", "_POW_2", "_RESIZE", "_DEBUG", "lock", "_NPARR"}
 
     def __init__(
         self, 
@@ -32,6 +32,7 @@ class CircularBuffer(Generic[T]):
         items: Optional[Sequence[T]] = None, 
         OVERWRITING: Optional[bool] = False, 
         RESIZE: Optional[bool] = False, 
+        NPARR : Optional[bool] = False,
         DEBUG: Optional[bool] = False
     ) -> None:
         """
@@ -58,10 +59,15 @@ class CircularBuffer(Generic[T]):
 
         self._capacity = capacity
         self._size = 0
-        #self._items: list[Optional[T]] = [None] * capacity
-        self._items = np.zeros(capacity, dtype=np.int16)
+
+        if not NPARR:
+            self._items: list[Optional[T]] = [None] * capacity
+        else:
+            self._items = np.zeros(capacity, dtype=np.int16)
+
         self._OVERWRITING = OVERWRITING
         self._RESIZE = RESIZE
+        self._NPARR = NPARR
         self._DEBUG = DEBUG
 
         self._head = 0 #Write Pointer
@@ -152,7 +158,7 @@ class CircularBuffer(Generic[T]):
         Returns:
             int: Number of elements actually enqueued.
         """
-        if not items: return
+        if items is None or len(items) == 0: return
 
         input_size: int = len(items)
         space_in_buffer  : int = self._capacity - self._size
@@ -223,11 +229,13 @@ class CircularBuffer(Generic[T]):
 
         remaining = count - first_part
         if remaining > 0:
-            #out += self._items[0:remaining]
-            out = np.concatenate((
-                self._items[tail : tail + first_part],
-                self._items[0:remaining]
-            ))
+            if not self._NPARR:
+                out += self._items[0:remaining]
+            else:
+                out = np.concatenate((
+                    self._items[tail : tail + first_part],
+                    self._items[0:remaining]
+                ))
 
         self._tail = self._move_pointer(self._tail, count)
         self._size -= count
@@ -244,6 +252,11 @@ class CircularBuffer(Generic[T]):
         if not self._RESIZE:
             return
 
+        if self._NPARR:
+            if self._DEBUG:
+                raise ValueError("Cannot resize nparrays")
+            return
+        
         if new_capacity is None:
              new_capacity = max(self._capacity * 2, self._size + 1)
 
